@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import os
 import signal
 import tarfile
 import threading
@@ -610,3 +611,33 @@ async def test_hydrate_workspace_cancellation_waits_for_the_extracting_worker(
     # the workspace root are only released once nothing is still writing to them.
     assert events == ["extract-start", "extract-end"]
     assert not buf.closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("skip_first_link", [False, True])
+async def test_persisted_workspace_with_hardlinks_hydrates_into_a_new_root(
+    tmp_path: Path,
+    skip_first_link: bool,
+) -> None:
+    workspace = tmp_path / "workspace"
+    cached = workspace / ".cache" / "uv" / "module.py"
+    installed = workspace / ".venv" / "lib" / "module.py"
+    cached.parent.mkdir(parents=True)
+    installed.parent.mkdir(parents=True)
+    cached.write_text("VALUE = 1\n")
+    os.link(cached, installed)
+
+    session = _RecordingUnixLocalSession(workspace)
+    if skip_first_link:
+        session.register_persist_workspace_skip_path(".cache/uv/module.py")
+    archive = await session.persist_workspace()
+
+    restored = tmp_path / "restored"
+    await _RecordingUnixLocalSession(restored).hydrate_workspace(archive)
+
+    assert (restored / ".venv" / "lib" / "module.py").read_text() == "VALUE = 1\n"
+    restored_cached = restored / ".cache" / "uv" / "module.py"
+    if skip_first_link:
+        assert not restored_cached.exists()
+    else:
+        assert restored_cached.read_text() == "VALUE = 1\n"

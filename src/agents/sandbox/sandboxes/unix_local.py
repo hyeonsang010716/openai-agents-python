@@ -1141,21 +1141,21 @@ class UnixLocalSandboxSession(BaseSandboxSession):
         skip = self._persist_workspace_skip_relpaths()
         buf = io.BytesIO()
 
+        def _filter_member(ti: tarfile.TarInfo) -> tarfile.TarInfo | None:
+            if should_skip_tar_member(ti.name, skip_rel_paths=skip, root_name=None):
+                return None
+            if ti.islnk():
+                # Hydration rejects hardlink members, so archive every additional path to an
+                # inode as a regular file. `tarfile` records an inode's first path before this
+                # filter runs, so a link could otherwise target a path that was skipped above.
+                ti.type = tarfile.REGTYPE
+                ti.linkname = ""
+                ti.size = (root / ti.name).lstat().st_size
+            return ti
+
         def _archive_workspace() -> None:
             with tarfile.open(fileobj=buf, mode="w") as tar:
-                tar.add(
-                    root,
-                    arcname=".",
-                    filter=lambda ti: (
-                        None
-                        if should_skip_tar_member(
-                            ti.name,
-                            skip_rel_paths=skip,
-                            root_name=None,
-                        )
-                        else ti
-                    ),
-                )
+                tar.add(root, arcname=".", filter=_filter_member)
 
         try:
             await run_blocking_workspace_io(_archive_workspace)
